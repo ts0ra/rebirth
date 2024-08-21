@@ -32,5 +32,6 @@ private:
     void rendering();
     void handleLostDevice();
 
+    void drawESP();
     void drawMainMenu();
 };

@@ -57,7 +57,7 @@ void overlay::registerClassOverlay()
 
 void overlay::createOverlay()
 {
-	HWND targetWindow = FindWindowA(NULL, "AssaultCube");
+	/*HWND targetWindow = FindWindowA(NULL, "AssaultCube");
 
 	RECT clientRect{ 0, 0, 800, 600 };
 	POINT clientToScreenPoint = { 0, 0 };
@@ -67,17 +67,17 @@ void overlay::createOverlay()
 	}
 
 	int width = clientRect.right - clientRect.left;
-	int height = clientRect.bottom - clientRect.top;
+	int height = clientRect.bottom - clientRect.top;*/
 
 	hWnd = CreateWindowEx(
 		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
 		wc.lpszClassName,
 		L"ESP Overlay",
 		WS_POPUP,
-		clientToScreenPoint.x,
-		clientToScreenPoint.y,
-		width,
-		height,
+		0,
+		0,
+		500,
+		300,
 		NULL,
 		NULL,
 		hInst,
@@ -124,8 +124,10 @@ void overlay::runMessageLoop()
 
 		// main loop
 		handleLostDevice();
-
 		startRender();
+		// esp view port
+		drawESP();
+		// main menu view port
 		drawMainMenu();
 		rendering();
 	}
@@ -223,14 +225,16 @@ void overlay::handleLostDevice()
 	}
 }
 
-void overlay::drawMainMenu()
+void overlay::drawESP()
 {
-	ImGui::GetMainViewport()->Pos = ImVec2(1000, 1000);
 	ImDrawList* mainDraw = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
 	ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
 	mainDraw->AddText(ImGui::GetMainViewport()->Pos, IM_COL32(255, 255, 255, 255), "Rebirth");
 	mainDraw->AddRectFilled(ImVec2(mainViewPortPos.x + 100, mainViewPortPos.y + 100), ImVec2(mainViewPortPos.x + 200, mainViewPortPos.y + 200), ImColor(255, 255, 255), 0);
+}
 
+void overlay::drawMainMenu()
+{
 	ImGui::Begin("Main Menu");
 	ImGui::Text("Hello, world!");
 	ImGui::End();
@@ -246,6 +250,11 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_DESTROY:
 		PostQuitMessage(0);
+		break;
+
+	case WM_SYSCOMMAND:
+		if ((wParam & 0xfff0) == SC_KEYMENU)	// Disable ALT application menu
+			return 0;							// (when you press ALT when window active, the cursor will move to the taskbar (top-left corner))
 		break;
 
 	default:
