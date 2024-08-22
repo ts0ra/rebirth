@@ -3,19 +3,26 @@
 
 namespace hack
 {
-	inline bool toggleAimbot;
-	inline bool toggleNoRecoil;
-	inline bool toggleUnlimitedAmmo;
-	inline bool toggleUnlimitedArmor;
-	inline bool toggleUnlimitedHealth;
-	inline bool toggleRadar;
+    inline bool toggleAimbot{ false };
+	inline bool toggleNoRecoil{ false };
+	inline bool toggleUnlimitedAmmo{ false };
+	inline bool toggleUnlimitedArmor{ false };
+	inline bool toggleUnlimitedHealth{ false };
+	inline bool toggleRadar{ false };
 
-	inline bool toggleESP;
-    inline bool toggleBoxESP;
-    inline bool toggleNameESP;
-    inline bool toggleHealthESP;
-    inline bool toggleArmorESP;
-    inline bool toggleDistaneESP;
+	inline bool toggleESP{ false };
+    inline bool toggleBoxESP{ false };
+    inline bool toggleNameESP{ false };
+    inline bool toggleHealthESP{ false };
+    inline bool toggleArmorESP{ false };
+    inline bool toggleDistaneESP{ false };
+    inline bool toggleDrawFOV{ false };
+
+	inline float aimbotFOV{ 10.0f };
+	inline float aimbotSmoothing{ 1.0f };
+	inline bool toggleSmoothAim{ true };
+    inline int fovType{ 0 };
+	inline float fovColor[3]{ 255.0f, 255.0f, 255.0f };
 
     inline bool isTeamGameMode(int gameMode)
     {

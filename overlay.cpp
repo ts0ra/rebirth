@@ -11,12 +11,17 @@
 #include <stdexcept>
 #include <sstream>
 #include <thread>
+#include <cmath>
 //#include <chrono>
 
 // Forward declarations
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight);
 bool WorldToScreen(const D3DXVECTOR3& pos, D3DXVECTOR3& screen, const D3DMATRIX& matrix, int width, int height);
+float GetAngleDifference(float angle1, float angle2);
+bool IsTargetWithinFOV(const D3DXVECTOR3& ourViewAngles, const D3DXVECTOR3& ourTargetViewAngles, float maxFOV);
+D3DXVECTOR3 SmoothAim(const D3DXVECTOR3& currentViewAngles, const D3DXVECTOR3& targetViewAngles, float smoothingFactor);
+D3DXVECTOR3 CalculateAngle(const D3DXVECTOR3& source, const D3DXVECTOR3& destination);
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Global variables
@@ -27,29 +32,6 @@ static UINT g_ResizeWidth{ 0 }, g_ResizeHeight{ 0 };
 // Thread
 std::thread checkProcessThread;
 std::thread getHacksValueThread;
-
-float GetAngleDifference(const D3DXVECTOR3& angle1, const D3DXVECTOR3& angle2) {
-	D3DXVECTOR3 delta = angle2 - angle1;
-	return sqrt(delta.x * delta.x + delta.y * delta.y);
-}
-
-D3DXVECTOR3 CalculateAngle(const D3DXVECTOR3& source, const D3DXVECTOR3& destination) {
-	D3DXVECTOR3 delta = destination - source;
-	float hypotenuse = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
-	D3DXVECTOR3 angles;
-	angles.x = atan2f(delta.y, delta.x) * (180.0f / D3DX_PI);
-	angles.y = atan2f(delta.z, hypotenuse) * (180.0f / D3DX_PI);
-	angles.z = 0.0f;
-
-	angles.x += 90;
-
-	return angles;
-}
-
-void SetViewAngles(const D3DXVECTOR3& angles, Memory& mem) {
-	// Assuming you have a function to write to the player's view angles in memory
-	mem.Write<D3DXVECTOR3>(data::localPlayerEntity + offsets::viewAngles, angles);
-}
 
 Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 {
@@ -374,6 +356,25 @@ void Overlay::drawESP()
 	sprintf_s(fpsText, sizeof(fpsText), "FPS: %d", static_cast<int>(ImGui::GetIO().Framerate));
 	mainDraw->AddText(mainViewPortPos + ImVec2(5, 5), ImColor(255, 255, 255), fpsText);
 
+	if (hack::toggleDrawFOV)
+	{
+		ImVec2 screenCenter(clientWidth / 2.0f, clientHeight / 2.0f);
+		float scalingFactor = 7.0f / 1.0f; 
+		float fov = hack::aimbotFOV * scalingFactor;
+
+		// Draw fov
+		if (hack::fovType == 0)
+			mainDraw->AddCircle(mainViewPortPos + screenCenter, fov, ImColor(hack::fovColor[0], hack::fovColor[1], hack::fovColor[2]));
+		else
+		{
+			float diameter = 2 * fov;
+			ImVec2 topLeft = mainViewPortPos + screenCenter - ImVec2(fov, fov);
+			ImVec2 bottomRight = mainViewPortPos + screenCenter + ImVec2(fov, fov);
+			mainDraw->AddRect(topLeft, bottomRight, ImColor(hack::fovColor[0], hack::fovColor[1], hack::fovColor[2]));
+		}
+	}
+
+
 	// Player ESP
 	if (hack::toggleESP)
 	{
@@ -495,7 +496,10 @@ void Overlay::drawMainMenu()
 		// Hack tab
 		if (ImGui::BeginTabItem("hack"))
 		{
-			ImGui::Checkbox("Aimbot", &hack::toggleAimbot);
+			ImGui::Checkbox("Aimbot", &hack::toggleAimbot); ImGui::SameLine();
+			ImGui::Checkbox("Enable Smoothing", &hack::toggleSmoothAim);
+			ImGui::SliderFloat("Smoothing", &hack::aimbotSmoothing, 1.0f, 10.0f);
+			ImGui::SliderFloat("Aimbot FOV", &hack::aimbotFOV, 1.0f, 180.0f);
 			ImGui::Checkbox("No Recoil", &hack::toggleNoRecoil);
 			ImGui::Checkbox("Unlimited Ammo", &hack::toggleUnlimitedAmmo);
 			ImGui::Checkbox("Unlimited Health", &hack::toggleUnlimitedHealth);
@@ -508,6 +512,11 @@ void Overlay::drawMainMenu()
 		// Visual tab
 		if (ImGui::BeginTabItem("visual"))
 		{
+			ImGui::Checkbox("Draw FOV", &hack::toggleDrawFOV); ImGui::SameLine();
+			ImGui::RadioButton("Circle", &hack::fovType, 0); ImGui::SameLine();
+			ImGui::RadioButton("Rectangle", &hack::fovType, 1); ImGui::SameLine();
+			ImGui::ColorEdit3("FOV Color", hack::fovColor, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+
 			if (!g_TargetWindow) ImGui::BeginDisabled();
 			ImGui::Checkbox("ESP", &hack::toggleESP);
 			if (!g_TargetWindow) ImGui::EndDisabled();
@@ -538,13 +547,13 @@ void Overlay::drawMainMenu()
 			ImGui::Text("MainViewport Size: (%.0f, %.0f)", ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y);
 
 			// Show frametime
-			ImGui::Text("Frametime: %.3f ms | FPS: %.0f", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			//ImGui::Text("Frametime: %.3f ms | FPS: %.0f", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 			// show plot frametime
-			static float values[90] = { 0 };
-			static int values_offset = 0;
-			values[values_offset] = 1000.0f / ImGui::GetIO().Framerate;
-			values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
-			ImGui::PlotLines("Frametime", values, IM_ARRAYSIZE(values), values_offset, NULL, 0.0f, 20.0f, ImVec2(0, 80));
+			//static float values[90] = { 0 };
+			//static int values_offset = 0;
+			//values[values_offset] = 1000.0f / ImGui::GetIO().Framerate;
+			//values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
+			//ImGui::PlotLines("Frametime", values, IM_ARRAYSIZE(values), values_offset, NULL, 0.0f, 20.0f, ImVec2(0, 80));
 
 			ImGui::EndTabItem();
 		}
@@ -557,12 +566,12 @@ void Overlay::hack()
 {
 	if (hack::toggleAimbot)
 	{
-		const float AIMBOT_FOV{ 30.0f };
-		float distance{ 999999.f };
-		uintptr_t entity{};
-		D3DXVECTOR3 targetEntityHeadPos{};
 		if (!data::localIsDead)
 		{
+
+			float smallestAngleDifference = FLT_MAX; // Initialize with the maximum possible float value
+			D3DXVECTOR3 closestTargetViewAngle;
+
 			for (int i{ 0 }; i < data::totalPlayers; ++i)
 			{
 				// Skip if invalid tempPlayerEntity
@@ -577,45 +586,30 @@ void Overlay::hack()
 				int tempEntityTeamSide = { mem.Read<int>(tempPlayerEntity + offsets::teamSide) };
 				if (tempEntityTeamSide == data::localTeamSide) continue;
 
-				// Calculate distance to the target
 				D3DXVECTOR3 tempEntityHeadPos = { mem.Read<D3DXVECTOR3>(tempPlayerEntity + offsets::head) };
-				D3DXVECTOR3 distanceVector = { tempEntityHeadPos - data::localPlayerHeadPos };
-				float tempDistance = D3DXVec3Length(&distanceVector);
+				D3DXVECTOR3 targetViewAngle = { CalculateAngle(data::localPlayerHeadPos, tempEntityHeadPos) };
 
-				// Calculate the angle to the target
-				D3DXVECTOR3 targetAngle = CalculateAngle(data::localPlayerHeadPos, tempEntityHeadPos);
-
-				float angleDifference = GetAngleDifference(data::viewAngle, targetAngle);
-
-				// Set distance, target head, and entity object if the distance is shorter
-				if (tempDistance < distance && angleDifference <= AIMBOT_FOV)
+				if (IsTargetWithinFOV(data::viewAngle, targetViewAngle, hack::aimbotFOV))
 				{
-					distance = tempDistance;
-					entity = tempPlayerEntity;
-					targetEntityHeadPos = tempEntityHeadPos;
+					float angleDifference = GetAngleDifference(data::viewAngle.y, targetViewAngle.y) + 
+											GetAngleDifference(data::viewAngle.x, targetViewAngle.x);
+
+					if (angleDifference < smallestAngleDifference)
+					{
+						smallestAngleDifference = angleDifference;
+						closestTargetViewAngle = targetViewAngle;
+					}
+
 				}
 			}
-			appLog.AddLog("Target distance: %f\n", distance);
-			appLog.AddLog("Entity: %p\n", entity);
-			appLog.AddLog("Entity head pos: %f, %f, %f\n", targetEntityHeadPos.x, targetEntityHeadPos.y, targetEntityHeadPos.z);
-			if (entity)
+			if (smallestAngleDifference < FLT_MAX && (GetAsyncKeyState(VK_RBUTTON) & 0x8000))
 			{
-				data::viewAngle = { CalculateAngle(data::localPlayerHeadPos, targetEntityHeadPos) };
-				SetViewAngles(data::viewAngle, mem);
+				D3DXVECTOR3 smoothedAngles = SmoothAim(data::viewAngle, closestTargetViewAngle, hack::aimbotSmoothing);
+				if (hack::toggleSmoothAim)
+					mem.Write<D3DXVECTOR3>(data::localPlayerEntity + offsets::viewAngles, smoothedAngles);
+				else
+					mem.Write<D3DXVECTOR3>(data::localPlayerEntity + offsets::viewAngles, closestTargetViewAngle);
 			}
-			//// Get the player's position
-			//D3DXVECTOR3 playerPosition = mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::head);
-
-			//// Get the target's position
-			//uintptr_t entity = mem.Read<uintptr_t>(data::playersEntityList + (1 * 0x4));
-			//D3DXVECTOR3 targetPosition = mem.Read<D3DXVECTOR3>(entity + offsets::head);
-			//
-			//// Calculate the aim direction
-			//D3DXVECTOR3 viewAngle = CalculateAngle(playerPosition, targetPosition);
-
-			//// Adjust the player's aim
-			//SetViewAngles(viewAngle, mem);
-
 		}
 	}
 
@@ -673,6 +667,7 @@ void Overlay::getHacksValue()
 		data::localPlayerHeadPos = { mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::head) };
 		data::localTeamSide = { mem.Read<int>(data::localPlayerEntity + offsets::teamSide) };
 		data::localIsDead = { mem.Read<bool>(data::localPlayerEntity + offsets::isDead) };
+		data::viewAngle = { mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::viewAngles) };
 	}
 }
 
@@ -688,59 +683,6 @@ void Overlay::HandleOverlayVisibility()
 	{
 		hideOverlay();
 	}
-}
-
-void checkProcess(Memory& mem, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
-	while (!g_ForceExitThread)
-	{
-		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
-		std::this_thread::sleep_for(std::chrono::seconds(5));
-		mem.Reinitialize(L"ac_client.exe");
-
-		if (mem.GetProcessId() != 0)
-		{
-			data::baseAddress = { mem.GetModuleAddress(L"ac_client.exe") };
-
-			g_TargetWindow = FindWindow(NULL, L"AssaultCube");
-
-			if (GetClientRect(g_TargetWindow, &clientRect)) {
-				ClientToScreen(g_TargetWindow, &clientToScreenPoint);
-			}
-
-			clientWidth = { clientRect.right - clientRect.left };
-			clientHeight = { clientRect.bottom - clientRect.top };
-
-			SetWindowPos(
-				hWnd, 
-				HWND_TOPMOST, 
-				clientToScreenPoint.x,
-				clientToScreenPoint.y,
-				clientWidth,
-				clientHeight,
-				SWP_NOACTIVATE
-			);
-			break;
-		}
-	}
-}
-
-bool WorldToScreen(const D3DXVECTOR3& pos, D3DXVECTOR3& screen, const D3DMATRIX& matrix, int width, int height) {
-	D3DXVECTOR4 clipCoords;
-	clipCoords.x = pos.x * matrix._11 + pos.y * matrix._21 + pos.z * matrix._31 + matrix._41;
-	clipCoords.y = pos.x * matrix._12 + pos.y * matrix._22 + pos.z * matrix._32 + matrix._42;
-	clipCoords.z = pos.x * matrix._13 + pos.y * matrix._23 + pos.z * matrix._33 + matrix._43;
-	clipCoords.w = pos.x * matrix._14 + pos.y * matrix._24 + pos.z * matrix._34 + matrix._44;
-
-	if (clipCoords.w < 0.1f) return false;
-
-	D3DXVECTOR3 NDC;
-	NDC.x = clipCoords.x / clipCoords.w;
-	NDC.y = clipCoords.y / clipCoords.w;
-	NDC.z = clipCoords.z / clipCoords.w;
-
-	screen.x = (width / 2 * NDC.x) + (NDC.x + width / 2);
-	screen.y = -(height / 2 * NDC.y) + (NDC.y + height / 2);
-	return true;
 }
 
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -771,4 +713,101 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
+}
+
+void checkProcess(Memory& mem, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
+	while (!g_ForceExitThread)
+	{
+		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		mem.Reinitialize(L"ac_client.exe");
+
+		if (mem.GetProcessId() != 0)
+		{
+			data::baseAddress = { mem.GetModuleAddress(L"ac_client.exe") };
+
+			g_TargetWindow = FindWindow(NULL, L"AssaultCube");
+
+			if (GetClientRect(g_TargetWindow, &clientRect)) {
+				ClientToScreen(g_TargetWindow, &clientToScreenPoint);
+			}
+
+			clientWidth = { clientRect.right - clientRect.left };
+			clientHeight = { clientRect.bottom - clientRect.top };
+
+			SetWindowPos(
+				hWnd,
+				HWND_TOPMOST,
+				clientToScreenPoint.x,
+				clientToScreenPoint.y,
+				clientWidth,
+				clientHeight,
+				SWP_NOACTIVATE
+			);
+			break;
+		}
+	}
+}
+
+bool WorldToScreen(const D3DXVECTOR3& pos, D3DXVECTOR3& screen, const D3DMATRIX& matrix, int width, int height) {
+	D3DXVECTOR4 clipCoords;
+	clipCoords.x = pos.x * matrix._11 + pos.y * matrix._21 + pos.z * matrix._31 + matrix._41;
+	clipCoords.y = pos.x * matrix._12 + pos.y * matrix._22 + pos.z * matrix._32 + matrix._42;
+	clipCoords.z = pos.x * matrix._13 + pos.y * matrix._23 + pos.z * matrix._33 + matrix._43;
+	clipCoords.w = pos.x * matrix._14 + pos.y * matrix._24 + pos.z * matrix._34 + matrix._44;
+
+	if (clipCoords.w < 0.1f) return false;
+
+	D3DXVECTOR3 NDC;
+	NDC.x = clipCoords.x / clipCoords.w;
+	NDC.y = clipCoords.y / clipCoords.w;
+	NDC.z = clipCoords.z / clipCoords.w;
+
+	screen.x = (width / 2 * NDC.x) + (NDC.x + width / 2);
+	screen.y = -(height / 2 * NDC.y) + (NDC.y + height / 2);
+	return true;
+}
+
+float GetAngleDifference(float angle1, float angle2)
+{
+	float diff = angle1 - angle2;
+	while (diff > 180.0f) diff -= 360.0f;
+	while (diff < -180.0f) diff += 360.0f;
+	return fabs(diff);
+}
+
+bool IsTargetWithinFOV(const D3DXVECTOR3& ourViewAngles, const D3DXVECTOR3& ourTargetViewAngles, float maxFOV)
+{
+	float yawDifference = GetAngleDifference(ourViewAngles.y, ourTargetViewAngles.y);
+	float pitchDifference = GetAngleDifference(ourViewAngles.x, ourTargetViewAngles.x);
+
+	return (yawDifference <= maxFOV && pitchDifference <= maxFOV);
+}
+
+D3DXVECTOR3 SmoothAim(const D3DXVECTOR3& currentViewAngles, const D3DXVECTOR3& targetViewAngles, float smoothingFactor)
+{
+	D3DXVECTOR3 smoothedAngles;
+	smoothedAngles.x = currentViewAngles.x + (targetViewAngles.x - currentViewAngles.x) / smoothingFactor;
+	smoothedAngles.y = currentViewAngles.y + (targetViewAngles.y - currentViewAngles.y) / smoothingFactor;
+	smoothedAngles.z = 0.0f;
+	return smoothedAngles;
+}
+
+D3DXVECTOR3 CalculateAngle(const D3DXVECTOR3& source, const D3DXVECTOR3& destination)
+{
+	D3DXVECTOR3 delta = destination - source;
+	float hypotenuse = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+	D3DXVECTOR3 angles;
+	angles.x = atan2f(delta.y, delta.x) * (180.0f / D3DX_PI);
+	angles.y = atan2f(delta.z, hypotenuse) * (180.0f / D3DX_PI);
+	angles.z = 0.0f;
+
+	angles.x += 90; // need to add this otherwise viewangle will be offside 90 degree
+
+	if (angles.x < 0.0f)
+	{
+		angles.x += 360.0f; // normalized because if it's negative, it will be off by 360 degree (this fix flicker issue)
+	}
+
+	return angles;
 }
