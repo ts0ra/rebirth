@@ -15,10 +15,12 @@ void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToS
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Global variables
-bool processFound = { false };
-bool forceExitThread = { false };
+static bool g_ForceExitThread = { false };
+static HWND g_TargetWindow = { nullptr };
+static UINT g_ResizeWidth{ 0 }, g_ResizeHeight{ 0 };
+
+// Thread
 std::thread checkProcessThread;
-HWND targetWindow;
 
 Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 {
@@ -26,17 +28,16 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 
 	if (mem.GetProcessId() != 0)
 	{
-		processFound = { true };
+		g_TargetWindow = FindWindow(NULL, L"ac_client.exe");
 	}
-
-	if (!processFound)
+	else
 	{
 		checkProcessThread = std::thread(
-			checkProcess, std::ref(mem), 
-			std::ref(hWnd), 
-			std::ref(clientRect), 
-			std::ref(clientToScreenPoint), 
-			std::ref(clientWidth), 
+			checkProcess, std::ref(mem),
+			std::ref(hWnd),
+			std::ref(clientRect),
+			std::ref(clientToScreenPoint),
+			std::ref(clientWidth),
 			std::ref(clientHeight)
 		);
 	}
@@ -81,12 +82,10 @@ void Overlay::registerClassOverlay()
 
 void Overlay::createOverlay()
 {
-	if (processFound)
+	if (g_TargetWindow)
 	{
-		targetWindow = FindWindow(NULL, L"AssaultCube");
-
-		if (GetClientRect(targetWindow, &clientRect)) {
-			ClientToScreen(targetWindow, &clientToScreenPoint);
+		if (GetClientRect(g_TargetWindow, &clientRect)) {
+			ClientToScreen(g_TargetWindow, &clientToScreenPoint);
 		}
 
 		clientWidth = { clientRect.right - clientRect.left };
@@ -134,6 +133,8 @@ void Overlay::hideOverlay()
 
 void Overlay::runMessageLoop()
 {
+	bool deviceLostTrigger { false };
+	bool deviceLost { false };
 	MSG msg{};
 	while (isRunning)
 	{
@@ -147,19 +148,20 @@ void Overlay::runMessageLoop()
 		}
 
 		// main loop
-		handleLostDevice();
+		handleLostDevice(deviceLost, deviceLostTrigger);
+		handleResize();
+
 		startRender();
 
-		// esp view port
 		drawESP();
-		// main menu view port
 		drawMainMenu();
 
-		// rendering
 		rendering();
+
+		checkIsDeviceLost(deviceLost);
 	}
 
-	forceExitThread = { true };
+	g_ForceExitThread = { true };
 	if (checkProcessThread.joinable()) {
 		checkProcessThread.join();
 	}
@@ -246,16 +248,44 @@ void Overlay::rendering()
 	}
 }
 
-void Overlay::handleLostDevice()
+void Overlay::handleLostDevice(bool& deviceLost, bool& deviceLostTrigger)
+{
+	HRESULT hr = pD3DDevice->TestCooperativeLevel();
+	if (hr == D3DERR_DEVICELOST)
+	{
+		::Sleep(10);
+		deviceLostTrigger = { true };
+	}
+	if (hr == D3DERR_DEVICENOTRESET)
+		resetDevice();
+	deviceLost = { false };
+}
+
+void Overlay::handleResize()
+{
+	if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
+	{
+		d3dpp.BackBufferWidth = g_ResizeWidth;
+		d3dpp.BackBufferHeight = g_ResizeHeight;
+		g_ResizeWidth = g_ResizeHeight = 0;
+		resetDevice();
+	}
+}
+
+void Overlay::resetDevice()
+{
+	ImGui_ImplDX9_InvalidateDeviceObjects();
+	HRESULT hr = pD3DDevice->Reset(&d3dpp);
+	if (hr == D3DERR_INVALIDCALL)
+		IM_ASSERT(0);
+	ImGui_ImplDX9_CreateDeviceObjects();
+}
+
+void Overlay::checkIsDeviceLost(bool& deviceLost)
 {
 	HRESULT result = pD3DDevice->Present(nullptr, nullptr, nullptr, nullptr);
-	if (result == D3DERR_DEVICELOST && pD3DDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET) {
-		ImGui_ImplDX9_InvalidateDeviceObjects();
-		HRESULT hr = pD3DDevice->Reset(&d3dpp); // Use the member variable d3dpp here
-		if (hr == D3DERR_INVALIDCALL)
-			IM_ASSERT(0);
-		ImGui_ImplDX9_CreateDeviceObjects();
-	}
+	if (result == D3DERR_DEVICELOST)
+		deviceLost = { true };
 }
 
 void Overlay::drawESP()
@@ -342,18 +372,18 @@ void Overlay::hack()
 }
 
 void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
-	while (processFound == false)
+	while (!g_ForceExitThread)
 	{
 		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
 		std::this_thread::sleep_for(std::chrono::seconds(5));
 		memory.Reinitialize(L"ac_client.exe");
 
-		if (memory.GetProcessId() != 0 || forceExitThread)
+		if (memory.GetProcessId() != 0)
 		{
-			targetWindow = FindWindow(NULL, L"AssaultCube");
+			g_TargetWindow = FindWindow(NULL, L"AssaultCube");
 
-			if (GetClientRect(targetWindow, &clientRect)) {
-				ClientToScreen(targetWindow, &clientToScreenPoint);
+			if (GetClientRect(g_TargetWindow, &clientRect)) {
+				ClientToScreen(g_TargetWindow, &clientToScreenPoint);
 			}
 
 			clientWidth = { clientRect.right - clientRect.left };
@@ -368,7 +398,6 @@ void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToS
 				clientHeight,
 				SWP_SHOWWINDOW | SWP_NOACTIVATE
 			);
-			processFound = { true };
 			break;
 		}
 	}
@@ -382,6 +411,12 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 	switch (uMsg)
 	{
+	case WM_SIZE:
+		if (wParam == SIZE_MINIMIZED)
+			return 0;
+		g_ResizeWidth = (UINT)LOWORD(lParam); // Queue resize
+		g_ResizeHeight = (UINT)HIWORD(lParam);
+		return 0;
 	case WM_DESTROY:
 		PostQuitMessage(0);
 		break;

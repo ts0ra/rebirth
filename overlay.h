@@ -42,7 +42,10 @@ private:
 
     void startRender();
     void rendering();
-    void handleLostDevice();
+    void handleResize();
+    void handleLostDevice(bool& deviceLost, bool& deviceLostTrigger);
+	void resetDevice();
+    void checkIsDeviceLost(bool& deviceLost);
 
     void drawESP();
     void drawMainMenu();
