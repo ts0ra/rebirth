@@ -44,6 +44,7 @@ private:
     void rendering();
     void handleResize();
     void handleLostDevice(bool& deviceLost, bool& deviceLostTrigger);
+	void checkTargetWindowPosition();
 	void resetDevice();
     void checkIsDeviceLost(bool& deviceLost);
 

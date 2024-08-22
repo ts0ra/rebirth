@@ -28,7 +28,7 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 
 	if (mem.GetProcessId() != 0)
 	{
-		g_TargetWindow = FindWindow(NULL, L"ac_client.exe");
+		g_TargetWindow = FindWindow(NULL, L"AssaultCube");
 	}
 	else
 	{
@@ -147,6 +147,8 @@ void Overlay::runMessageLoop()
 			DispatchMessageW(&msg);
 		}
 
+		checkTargetWindowPosition();
+
 		// main loop
 		handleLostDevice(deviceLost, deviceLostTrigger);
 		handleResize();
@@ -248,6 +250,15 @@ void Overlay::rendering()
 	}
 }
 
+void Overlay::checkTargetWindowPosition()
+{
+	if (!g_TargetWindow)
+		return;
+
+	RECT rect;
+
+}
+
 void Overlay::handleLostDevice(bool& deviceLost, bool& deviceLostTrigger)
 {
 	HRESULT hr = pD3DDevice->TestCooperativeLevel();
@@ -345,6 +356,9 @@ void Overlay::drawMainMenu()
 			ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
 			ImGui::Text("Main Viewport Pos: (%.1f, %.1f)", mainViewPortPos.x, mainViewPortPos.y);
 
+			// ClientToScreenPoint
+			ImGui::Text("ClientToScreenPoint: (%d, %d)", clientToScreenPoint.x, clientToScreenPoint.y);
+
 			ImVec2 mainViewPortSize = ImGui::GetMainViewport()->Size;
 			ImGui::Text("Main Viewport Size: (%.1f, %.1f)", mainViewPortSize.x, mainViewPortSize.y);
 
@@ -396,7 +410,7 @@ void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToS
 				clientToScreenPoint.y,
 				clientWidth,
 				clientHeight,
-				SWP_SHOWWINDOW | SWP_NOACTIVATE
+				SWP_NOACTIVATE
 			);
 			break;
 		}
