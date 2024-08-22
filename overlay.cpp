@@ -19,7 +19,6 @@ bool processFound = { false };
 bool forceExitThread = { false };
 std::thread checkProcessThread;
 HWND targetWindow;
-ImGuiWindowClass windowClass;
 
 Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 {
@@ -35,7 +34,10 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 		checkProcessThread = std::thread(checkProcess, std::ref(mem));
 	}
 
-	windowClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+	menuClass.ViewportFlagsOverrideSet = {
+		ImGuiViewportFlags_NoAutoMerge |
+		ImGuiViewportFlags_IsFocused
+	};
 
 	registerClassOverlay();
 	createOverlay();
@@ -262,7 +264,7 @@ void Overlay::drawESP()
 
 void Overlay::drawMainMenu()
 {
-	ImGui::SetNextWindowClass(&windowClass); // i declear windowClass as global variable and init it in Overlay constructor, check it later
+	ImGui::SetNextWindowClass(&menuClass);
 	ImGui::SetNextWindowSize(ImVec2(500, 300));
 	ImGui::Begin(
 		"Rebirth",
