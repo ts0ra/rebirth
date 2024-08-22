@@ -9,7 +9,7 @@ int WINAPI wWinMain(
 {
 
     Overlay esp{ hInstance };
-    esp.showOverlay();
+    esp.hideOverlay();
     esp.runMessageLoop();
 
     return 0;

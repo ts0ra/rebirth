@@ -47,9 +47,11 @@ private:
 	void checkTargetWindowPosition();
 	void resetDevice();
     void checkIsDeviceLost(bool& deviceLost);
+	void HandleOverlayVisibility();
 
     void drawESP();
     void drawMainMenu();
 
     void hack();
+    void getHacksValue();
 };

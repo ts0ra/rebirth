@@ -1,17 +1,22 @@
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
 #include <imgui_impl_win32.h>
+#include <d3dx9.h>
 
 #include <overlay.h>
 #include <ImVec2Operators.h>
+#include <hack.h>
+#include <offset.h>
 
 #include <stdexcept>
 #include <sstream>
 #include <thread>
+//#include <chrono>
 
 // Forward declarations
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight);
+bool WorldToScreen(const D3DXVECTOR3& pos, D3DXVECTOR3& screen, const D3DMATRIX& matrix, int width, int height);
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Global variables
@@ -21,6 +26,30 @@ static UINT g_ResizeWidth{ 0 }, g_ResizeHeight{ 0 };
 
 // Thread
 std::thread checkProcessThread;
+std::thread getHacksValueThread;
+
+float GetAngleDifference(const D3DXVECTOR3& angle1, const D3DXVECTOR3& angle2) {
+	D3DXVECTOR3 delta = angle2 - angle1;
+	return sqrt(delta.x * delta.x + delta.y * delta.y);
+}
+
+D3DXVECTOR3 CalculateAngle(const D3DXVECTOR3& source, const D3DXVECTOR3& destination) {
+	D3DXVECTOR3 delta = destination - source;
+	float hypotenuse = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+	D3DXVECTOR3 angles;
+	angles.x = atan2f(delta.y, delta.x) * (180.0f / D3DX_PI);
+	angles.y = atan2f(delta.z, hypotenuse) * (180.0f / D3DX_PI);
+	angles.z = 0.0f;
+
+	angles.x += 90;
+
+	return angles;
+}
+
+void SetViewAngles(const D3DXVECTOR3& angles, Memory& mem) {
+	// Assuming you have a function to write to the player's view angles in memory
+	mem.Write<D3DXVECTOR3>(data::localPlayerEntity + offsets::viewAngles, angles);
+}
 
 Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 {
@@ -29,6 +58,7 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 	if (mem.GetProcessId() != 0)
 	{
 		g_TargetWindow = FindWindow(NULL, L"AssaultCube");
+		data::baseAddress = { mem.GetModuleAddress(L"ac_client.exe") };
 	}
 	else
 	{
@@ -136,8 +166,13 @@ void Overlay::runMessageLoop()
 	bool deviceLostTrigger { false };
 	bool deviceLost { false };
 	MSG msg{};
+
+	getHacksValueThread = std::thread(&Overlay::getHacksValue, this);
+
 	while (isRunning)
 	{
+		//auto start = std::chrono::high_resolution_clock::now(); // Start time
+
 		while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
 			if (msg.message == WM_QUIT) {
 				isRunning = !isRunning;
@@ -147,6 +182,7 @@ void Overlay::runMessageLoop()
 			DispatchMessageW(&msg);
 		}
 
+		HandleOverlayVisibility();
 		checkTargetWindowPosition();
 
 		// main loop
@@ -155,15 +191,23 @@ void Overlay::runMessageLoop()
 
 		startRender();
 
+		hack();
 		drawESP();
 		drawMainMenu();
 
 		rendering();
 
 		checkIsDeviceLost(deviceLost);
+
+		//auto end = std::chrono::high_resolution_clock::now(); // End time
+		//std::chrono::duration<double, std::milli> duration = end - start; // Calculate duration in milliseconds
+		//appLog.AddLog("Iteration took %.2f ms\n", duration.count()); // Log the duration
 	}
 
 	g_ForceExitThread = { true };
+	if (getHacksValueThread.joinable()) {
+		getHacksValueThread.join();
+	}
 	if (checkProcessThread.joinable()) {
 		checkProcessThread.join();
 	}
@@ -252,11 +296,31 @@ void Overlay::rendering()
 
 void Overlay::checkTargetWindowPosition()
 {
-	if (!g_TargetWindow)
+	if (mem.GetProcessId() == 0)
 		return;
 
-	RECT rect;
+	g_TargetWindow = FindWindow(NULL, L"AssaultCube");
+	RECT currentClientRect{};
+	POINT currentClientToScreenPoint{};
+	GetClientRect(g_TargetWindow, &currentClientRect);
+	ClientToScreen(g_TargetWindow, &currentClientToScreenPoint);
 
+	if (currentClientToScreenPoint.x != clientToScreenPoint.x || currentClientToScreenPoint.y != clientToScreenPoint.y)
+	{
+		clientWidth = { currentClientRect.right - currentClientRect.left };
+		clientHeight = { currentClientRect.bottom - currentClientRect.top };
+
+		clientToScreenPoint = { currentClientToScreenPoint };
+		SetWindowPos(
+			hWnd,
+			HWND_TOPMOST,
+			clientToScreenPoint.x,
+			clientToScreenPoint.y,
+			clientWidth,
+			clientHeight,
+			SWP_NOACTIVATE
+		);
+	}
 }
 
 void Overlay::handleLostDevice(bool& deviceLost, bool& deviceLostTrigger)
@@ -301,11 +365,116 @@ void Overlay::checkIsDeviceLost(bool& deviceLost)
 
 void Overlay::drawESP()
 {
-	// Window viewport id
+	// Window main viewport
 	ImDrawList* mainDraw = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
 	ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
-	mainDraw->AddText(ImGui::GetMainViewport()->Pos, IM_COL32(255, 255, 255, 255), "Rebirth");
-	mainDraw->AddRectFilled(mainViewPortPos + ImVec2(100.0f, 100.0f), mainViewPortPos + ImVec2(200.0f, 200.0f), ImColor(255, 255, 255), 0);
+
+	// Display overlay FPS
+	char fpsText[16];  // Sufficient size for FPS display
+	sprintf_s(fpsText, sizeof(fpsText), "FPS: %d", static_cast<int>(ImGui::GetIO().Framerate));
+	mainDraw->AddText(mainViewPortPos + ImVec2(5, 5), ImColor(255, 255, 255), fpsText);
+
+	// Player ESP
+	if (hack::toggleESP)
+	{
+		for (int i{ 0 }; i < data::totalPlayers; ++i)
+		{
+			uintptr_t entity = mem.Read<uintptr_t>(data::playersEntityList + (i * 0x4));
+			if (entity == 0) continue; // Skip if invalid entity
+
+			if (hack::isTeamGameMode(data::gameMode))
+			{
+				int teamSide = mem.Read<int>(entity + offsets::teamSide);
+				int localTeamSide = mem.Read<int>(data::localPlayerEntity + offsets::teamSide);
+				if (teamSide == localTeamSide) continue; // Skip if the entity is on the same team
+			}
+
+			bool isDead = mem.Read<bool>(entity + offsets::isDead);
+			if (isDead) continue; // Skip if the entity is dead
+
+			D3DXVECTOR3 headPosition = mem.Read<D3DXVECTOR3>(entity + offsets::head);
+			D3DXVECTOR3 footPosition = mem.Read<D3DXVECTOR3>(entity + offsets::foot);
+			D3DXVECTOR3 headScreenPosition, footScreenPosition, screenPosition;
+
+			if (WorldToScreen(headPosition, headScreenPosition, data::viewMatrix, clientWidth, clientHeight) &&
+				WorldToScreen(footPosition, footScreenPosition, data::viewMatrix, clientWidth, clientHeight))
+			{
+
+				// Draw player box ESP
+				float boxHeight = footScreenPosition.y - headScreenPosition.y;
+				float boxWidth = boxHeight / 2.0f; // Assuming a 1:2 width to height ratio
+				if (hack::toggleBoxESP)
+				{
+					mainDraw->AddRect(
+						mainViewPortPos + ImVec2(headScreenPosition.x - boxWidth / 2, headScreenPosition.y), // Top-left corner
+						mainViewPortPos + ImVec2(headScreenPosition.x + boxWidth / 2, footScreenPosition.y), // Bottom-right corner
+						ImColor(255, 0, 0)
+					);
+				}
+
+				// Draw player name ESP
+				if (hack::toggleNameESP)
+				{
+					char playerName[16];
+					mem.ReadChar<char>(entity + offsets::name, playerName, 16);
+
+					ImVec2 textSize = ImGui::CalcTextSize(playerName);
+					ImVec2 textPosition = mainViewPortPos + ImVec2(headScreenPosition.x - textSize.x / 2, headScreenPosition.y - 15.0f);
+					mainDraw->AddText(textPosition, ImColor(255, 255, 255), playerName);
+				}
+
+				// Draw health bar ESP
+				float health = static_cast<float>(mem.Read<int>(entity + offsets::health));
+				float maxHealth = 100.0f; // Max health
+				float healthBarHeight = boxHeight * (health / maxHealth); // Health bar height proportional to the player height
+				float healthBarWidth = 2.0f; // Width of the health bar
+
+				ImVec2 healthBarTopLeft = ImVec2((headScreenPosition.x - boxWidth / 2 - healthBarWidth) - 2, headScreenPosition.y);
+				ImVec2 healthBarBottomRight = ImVec2(healthBarTopLeft.x + healthBarWidth, headScreenPosition.y + boxHeight);
+
+				ImVec2 healthBarForegroundTopLeft = mainViewPortPos + ImVec2(healthBarTopLeft.x, healthBarTopLeft.y + (boxHeight - healthBarHeight));
+				ImVec2 healthBarForegroundBottomRight = mainViewPortPos + ImVec2(healthBarTopLeft.x + healthBarWidth, healthBarTopLeft.y + boxHeight);
+				if (hack::toggleHealthESP)
+				{
+					mainDraw->AddRectFilled(healthBarTopLeft, healthBarBottomRight, ImColor(0, 0, 0));
+					mainDraw->AddRectFilled(healthBarForegroundTopLeft, healthBarForegroundBottomRight, ImColor(0, 255, 0));
+				}
+
+				// Draw armor bar ESP
+				float armor = static_cast<float>(mem.Read<int>(entity + offsets::armor));
+				float maxArmor = 100.0f; // Adjust based on game mechanics
+				float armorBarHeight = boxHeight * (armor / maxArmor); // Armor bar height proportional to the player height
+				float armorBarWidth = 2.0f; // Width of the armor bar
+
+				ImVec2 armorBarTopLeft = ImVec2(healthBarTopLeft.x - armorBarWidth - 2, headScreenPosition.y);
+				ImVec2 armorBarBottomRight = ImVec2(armorBarTopLeft.x + armorBarWidth, headScreenPosition.y + boxHeight);
+
+				ImVec2 armorBarForegroundTopLeft = mainViewPortPos + ImVec2(armorBarTopLeft.x, armorBarTopLeft.y + (boxHeight - armorBarHeight));
+				ImVec2 armorBarForegroundBottomRight = mainViewPortPos + ImVec2(armorBarTopLeft.x + armorBarWidth, armorBarTopLeft.y + boxHeight);
+				if (hack::toggleArmorESP)
+				{
+					mainDraw->AddRectFilled(armorBarTopLeft, armorBarBottomRight, ImColor(0, 0, 0));
+					mainDraw->AddRectFilled(armorBarForegroundTopLeft, armorBarForegroundBottomRight, ImColor(255, 255, 255));
+				}
+
+				// Draw player distance ESP
+				if (hack::toggleDistaneESP)
+				{
+					D3DXVECTOR3 localHeadPosition = mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::head);
+					D3DXVECTOR3 distanceVector = headPosition - localHeadPosition;
+					float distance = D3DXVec3Length(&distanceVector);
+
+					char distanceText[16];
+					sprintf_s(distanceText, sizeof(distanceText), "%d m", static_cast<int>(distance));
+
+					ImVec2 distanceTextSize = ImGui::CalcTextSize(distanceText);
+					ImVec2 distanceTextPosition = mainViewPortPos + ImVec2(headScreenPosition.x - distanceTextSize.x / 2, footScreenPosition.y + 1.0f);
+					mainDraw->AddText(distanceTextPosition, ImColor(255, 255, 255), distanceText);
+				}
+
+			}
+		}
+	}
 }
 
 void Overlay::drawMainMenu()
@@ -326,17 +495,30 @@ void Overlay::drawMainMenu()
 		// Hack tab
 		if (ImGui::BeginTabItem("hack"))
 		{
+			ImGui::Checkbox("Aimbot", &hack::toggleAimbot);
+			ImGui::Checkbox("No Recoil", &hack::toggleNoRecoil);
+			ImGui::Checkbox("Unlimited Ammo", &hack::toggleUnlimitedAmmo);
+			ImGui::Checkbox("Unlimited Health", &hack::toggleUnlimitedHealth);
+			ImGui::Checkbox("Unlimited Armor", &hack::toggleUnlimitedArmor);
+			ImGui::Checkbox("Radar", &hack::toggleRadar);
+
 			ImGui::EndTabItem();
 		}
 
 		// Visual tab
 		if (ImGui::BeginTabItem("visual"))
 		{
-			//if (memory.GetProcessId() == 0) ImGui::BeginDisabled();
+			if (!g_TargetWindow) ImGui::BeginDisabled();
+			ImGui::Checkbox("ESP", &hack::toggleESP);
+			if (!g_TargetWindow) ImGui::EndDisabled();
 
-			//ImGui::Checkbox("ESP");
-
-			//if (memory.GetProcessId() == 0) ImGui::EndDisabled();
+			if (!hack::toggleESP) ImGui::BeginDisabled();
+			ImGui::Checkbox("Box", &hack::toggleBoxESP);
+			ImGui::Checkbox("Player Name", &hack::toggleNameESP);
+			ImGui::Checkbox("Health", &hack::toggleHealthESP);
+			ImGui::Checkbox("Armor", &hack::toggleArmorESP);
+			ImGui::Checkbox("Player Distance", &hack::toggleDistaneESP);
+			if (!hack::toggleESP) ImGui::EndDisabled();
 
 			ImGui::EndTabItem();
 		}
@@ -351,28 +533,19 @@ void Overlay::drawMainMenu()
 		// Test tab
 		if (ImGui::BeginTabItem("test"))
 		{
-			ImGui::Text("Window Viewport ID: %d", ImGui::GetWindowViewport()->ID);
+			// show mainviewport pos and size
+			ImGui::Text("MainViewport Pos: (%.0f, %.0f)", ImGui::GetMainViewport()->Pos.x, ImGui::GetMainViewport()->Pos.y);
+			ImGui::Text("MainViewport Size: (%.0f, %.0f)", ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y);
 
-			ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
-			ImGui::Text("Main Viewport Pos: (%.1f, %.1f)", mainViewPortPos.x, mainViewPortPos.y);
+			// Show frametime
+			ImGui::Text("Frametime: %.3f ms | FPS: %.0f", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			// show plot frametime
+			static float values[90] = { 0 };
+			static int values_offset = 0;
+			values[values_offset] = 1000.0f / ImGui::GetIO().Framerate;
+			values_offset = (values_offset + 1) % IM_ARRAYSIZE(values);
+			ImGui::PlotLines("Frametime", values, IM_ARRAYSIZE(values), values_offset, NULL, 0.0f, 20.0f, ImVec2(0, 80));
 
-			// ClientToScreenPoint
-			ImGui::Text("ClientToScreenPoint: (%d, %d)", clientToScreenPoint.x, clientToScreenPoint.y);
-
-			ImVec2 mainViewPortSize = ImGui::GetMainViewport()->Size;
-			ImGui::Text("Main Viewport Size: (%.1f, %.1f)", mainViewPortSize.x, mainViewPortSize.y);
-
-			ImVec2 windowPos = ImGui::GetWindowPos();
-			ImGui::Text("Window Pos: (%.1f, %.1f)", windowPos.x, windowPos.y);
-
-			ImVec2 windowSize = ImGui::GetWindowSize();
-			ImGui::Text("Window Size: (%.1f, %.1f)", windowSize.x, windowSize.y);
-
-			ImVec2 windowViewportPos = ImGui::GetWindowViewport()->Pos;
-			ImGui::Text("Window Viewport Pos: (%.1f, %.1f)", windowViewportPos.x, windowViewportPos.y);
-
-			ImVec2 windowViewportSize = ImGui::GetWindowViewport()->Size;
-			ImGui::Text("Window Viewport Size: (%.1f, %.1f)", windowViewportSize.x, windowViewportSize.y);
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -382,18 +555,152 @@ void Overlay::drawMainMenu()
 
 void Overlay::hack()
 {
+	if (hack::toggleAimbot)
+	{
+		const float AIMBOT_FOV{ 30.0f };
+		float distance{ 999999.f };
+		uintptr_t entity{};
+		D3DXVECTOR3 targetEntityHeadPos{};
+		if (!data::localIsDead)
+		{
+			for (int i{ 0 }; i < data::totalPlayers; ++i)
+			{
+				// Skip if invalid tempPlayerEntity
+				uintptr_t tempPlayerEntity = { mem.Read<uintptr_t>(data::playersEntityList + (i * 0x4)) };
+				if (tempPlayerEntity == 0) continue;
 
+				// Skip if the tempPlayerEntity is dead
+				bool tempEntityIsDead = { mem.Read<bool>(tempPlayerEntity + offsets::isDead) };
+				if (tempEntityIsDead) continue;
+
+				// Skip if tempPlayerEntity is on the same team
+				int tempEntityTeamSide = { mem.Read<int>(tempPlayerEntity + offsets::teamSide) };
+				if (tempEntityTeamSide == data::localTeamSide) continue;
+
+				// Calculate distance to the target
+				D3DXVECTOR3 tempEntityHeadPos = { mem.Read<D3DXVECTOR3>(tempPlayerEntity + offsets::head) };
+				D3DXVECTOR3 distanceVector = { tempEntityHeadPos - data::localPlayerHeadPos };
+				float tempDistance = D3DXVec3Length(&distanceVector);
+
+				// Calculate the angle to the target
+				D3DXVECTOR3 targetAngle = CalculateAngle(data::localPlayerHeadPos, tempEntityHeadPos);
+
+				float angleDifference = GetAngleDifference(data::viewAngle, targetAngle);
+
+				// Set distance, target head, and entity object if the distance is shorter
+				if (tempDistance < distance && angleDifference <= AIMBOT_FOV)
+				{
+					distance = tempDistance;
+					entity = tempPlayerEntity;
+					targetEntityHeadPos = tempEntityHeadPos;
+				}
+			}
+			appLog.AddLog("Target distance: %f\n", distance);
+			appLog.AddLog("Entity: %p\n", entity);
+			appLog.AddLog("Entity head pos: %f, %f, %f\n", targetEntityHeadPos.x, targetEntityHeadPos.y, targetEntityHeadPos.z);
+			if (entity)
+			{
+				data::viewAngle = { CalculateAngle(data::localPlayerHeadPos, targetEntityHeadPos) };
+				SetViewAngles(data::viewAngle, mem);
+			}
+			//// Get the player's position
+			//D3DXVECTOR3 playerPosition = mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::head);
+
+			//// Get the target's position
+			//uintptr_t entity = mem.Read<uintptr_t>(data::playersEntityList + (1 * 0x4));
+			//D3DXVECTOR3 targetPosition = mem.Read<D3DXVECTOR3>(entity + offsets::head);
+			//
+			//// Calculate the aim direction
+			//D3DXVECTOR3 viewAngle = CalculateAngle(playerPosition, targetPosition);
+
+			//// Adjust the player's aim
+			//SetViewAngles(viewAngle, mem);
+
+		}
+	}
+
+	if (hack::toggleUnlimitedAmmo)
+	{
+		mem.Write<int>(mem.Read<std::uintptr_t>(data::localPlayerEntity, { offsets::currentWeaponObject, offsets::ammoLoaded }), 100);
+	}
+
+	if (hack::toggleUnlimitedHealth)
+	{
+		mem.Write<int>(data::localPlayerEntity + offsets::health, 999);
+	}
+
+	if (hack::toggleUnlimitedArmor)
+	{
+		mem.Write<int>(data::localPlayerEntity + offsets::armor, 999);
+	}
+
+	if (hack::toggleNoRecoil)
+	{
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::noRecoil), (BYTE*)("\xC2\x08\x00"), 3);
+	}
+	else
+	{
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::noRecoil), (BYTE*)("\x83\xEC\x28"), 3);
+	}
+
+	if (hack::toggleRadar)
+	{
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::radarMap), (BYTE*)("\xE9\x1D\x01\x00\x00\x90"), 6);
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::radarMiniMap), (BYTE*)("\xE9\x2B\x01\x00\x00\x90"), 6);
+	}
+	else
+	{
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::radarMap),		(BYTE*)("\x0F\x8D\xCC\x00\x00\x00"), 6);
+		mem.PatchEx((BYTE*)(data::baseAddress + offsets::radarMiniMap), (BYTE*)("\x0F\x8D\xD5\x00\x00\x00"), 6);
+	}
 }
 
-void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
+void Overlay::getHacksValue()
+{
+	while (!g_ForceExitThread)
+	{
+		if (!g_TargetWindow)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			continue;
+		}
+
+		data::localPlayerEntity = { mem.Read<uintptr_t>(data::baseAddress + offsets::localPlayerEntity) };
+		data::playersEntityList = { mem.Read<uintptr_t>(data::baseAddress + offsets::playersEntityList) };
+		data::totalPlayers = { mem.Read<int>(data::baseAddress + offsets::totalPlayer) };
+		data::viewMatrix = { mem.Read<D3DMATRIX>(data::baseAddress + offsets::viewMatrix) };
+		data::gameMode = { mem.Read<int>(data::baseAddress + offsets::gameMode) };
+		data::localPlayerHeadPos = { mem.Read<D3DXVECTOR3>(data::localPlayerEntity + offsets::head) };
+		data::localTeamSide = { mem.Read<int>(data::localPlayerEntity + offsets::teamSide) };
+		data::localIsDead = { mem.Read<bool>(data::localPlayerEntity + offsets::isDead) };
+	}
+}
+
+void Overlay::HandleOverlayVisibility()
+{
+	HWND foregroundWindow = GetForegroundWindow();
+
+	if (foregroundWindow == g_TargetWindow)
+	{
+		showOverlay();
+	}
+	else
+	{
+		hideOverlay();
+	}
+}
+
+void checkProcess(Memory& mem, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
 	while (!g_ForceExitThread)
 	{
 		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
 		std::this_thread::sleep_for(std::chrono::seconds(5));
-		memory.Reinitialize(L"ac_client.exe");
+		mem.Reinitialize(L"ac_client.exe");
 
-		if (memory.GetProcessId() != 0)
+		if (mem.GetProcessId() != 0)
 		{
+			data::baseAddress = { mem.GetModuleAddress(L"ac_client.exe") };
+
 			g_TargetWindow = FindWindow(NULL, L"AssaultCube");
 
 			if (GetClientRect(g_TargetWindow, &clientRect)) {
@@ -415,6 +722,25 @@ void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToS
 			break;
 		}
 	}
+}
+
+bool WorldToScreen(const D3DXVECTOR3& pos, D3DXVECTOR3& screen, const D3DMATRIX& matrix, int width, int height) {
+	D3DXVECTOR4 clipCoords;
+	clipCoords.x = pos.x * matrix._11 + pos.y * matrix._21 + pos.z * matrix._31 + matrix._41;
+	clipCoords.y = pos.x * matrix._12 + pos.y * matrix._22 + pos.z * matrix._32 + matrix._42;
+	clipCoords.z = pos.x * matrix._13 + pos.y * matrix._23 + pos.z * matrix._33 + matrix._43;
+	clipCoords.w = pos.x * matrix._14 + pos.y * matrix._24 + pos.z * matrix._34 + matrix._44;
+
+	if (clipCoords.w < 0.1f) return false;
+
+	D3DXVECTOR3 NDC;
+	NDC.x = clipCoords.x / clipCoords.w;
+	NDC.y = clipCoords.y / clipCoords.w;
+	NDC.z = clipCoords.z / clipCoords.w;
+
+	screen.x = (width / 2 * NDC.x) + (NDC.x + width / 2);
+	screen.y = -(height / 2 * NDC.y) + (NDC.y + height / 2);
+	return true;
 }
 
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
