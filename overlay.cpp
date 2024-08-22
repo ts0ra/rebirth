@@ -1,41 +1,26 @@
-#include <imgui.h>
-#include <imgui_impl_dx9.h>
-#include <imgui_impl_win32.h>
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_dx9.h"
+#include "imgui/imgui_impl_win32.h"
 
-#include <overlay.h>
-#include <ImVec2Operators.h>
+#include "overlay.h"
 
 #include <stdexcept>
 #include <sstream>
-#include <thread>
 
 // Forward declarations
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-void checkProcess(Memory& memory);
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-// Global variables
-bool processFound = { false };
-bool forceExitThread = { false };
-std::thread checkProcessThread;
-HWND targetWindow;
-ImGuiWindowClass windowClass;
-
-Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
+overlay::overlay(HINSTANCE hInst)
 {
 	hInst = { hInst };
+	wc = {};
+	isRunning = { true };
 
-	if (mem.GetProcessId() != 0)
-	{
-		processFound = { true };
-	}
-
-	if (!processFound)
-	{
-		checkProcessThread = std::thread(checkProcess, std::ref(mem));
-	}
-
-	windowClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
+	pD3D = {};
+	pD3DDevice = {};
+	hWnd = {};
+	d3dpp = {};
 
 	registerClassOverlay();
 	createOverlay();
@@ -44,7 +29,7 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 	initD3D();
 }
 
-Overlay::~Overlay()
+overlay::~overlay()
 {
 	ImGui_ImplDX9_Shutdown();
 	ImGui_ImplWin32_Shutdown();
@@ -54,7 +39,7 @@ Overlay::~Overlay()
 	DestroyWindow(hWnd);
 }
 
-void Overlay::registerClassOverlay()
+void overlay::registerClassOverlay()
 {
 	wc.style = { 0 };
 	wc.lpfnWndProc = { WindowProc };
@@ -70,32 +55,29 @@ void Overlay::registerClassOverlay()
 	RegisterClass(&wc);
 }
 
-void Overlay::createOverlay()
+void overlay::createOverlay()
 {
-	if (processFound)
-	{
-		targetWindow = FindWindow(NULL, L"AssaultCube");
+	/*HWND targetWindow = FindWindowA(NULL, "AssaultCube");
 
-		clientRect = { 0, 0, 800, 600 };
-		clientToScreenPoint = { 0, 0 };
+	RECT clientRect{ 0, 0, 800, 600 };
+	POINT clientToScreenPoint = { 0, 0 };
 
-		if (GetClientRect(targetWindow, &clientRect)) {
-			ClientToScreen(targetWindow, &clientToScreenPoint);
-		}
-
-		clientWidth = { clientRect.right - clientRect.left };
-		clientHeight = { clientRect.bottom - clientRect.top };
+	if (GetClientRect(targetWindow, &clientRect)) {
+		ClientToScreen(targetWindow, &clientToScreenPoint);
 	}
+
+	int width = clientRect.right - clientRect.left;
+	int height = clientRect.bottom - clientRect.top;*/
 
 	hWnd = CreateWindowEx(
 		WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
 		wc.lpszClassName,
 		L"ESP Overlay",
 		WS_POPUP,
-		clientToScreenPoint.x,
-		clientToScreenPoint.y,
-		clientWidth,
-		clientHeight,
+		0,
+		0,
+		500,
+		300,
 		NULL,
 		NULL,
 		hInst,
@@ -116,17 +98,17 @@ void Overlay::createOverlay()
 	SetLayeredWindowAttributes(hWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
 }
 
-void Overlay::showOverlay()
+void overlay::showOverlay()
 {
 	ShowWindow(hWnd, SW_SHOW);
 }
 
-void Overlay::hideOverlay()
+void overlay::hideOverlay()
 {
 	ShowWindow(hWnd, SW_HIDE);
 }
 
-void Overlay::runMessageLoop()
+void overlay::runMessageLoop()
 {
 	MSG msg{};
 	while (isRunning)
@@ -143,23 +125,15 @@ void Overlay::runMessageLoop()
 		// main loop
 		handleLostDevice();
 		startRender();
-
 		// esp view port
 		drawESP();
 		// main menu view port
 		drawMainMenu();
-
-		// rendering
 		rendering();
-	}
-
-	forceExitThread = { true };
-	if (checkProcessThread.joinable()) {
-		checkProcessThread.join();
 	}
 }
 
-void Overlay::createD3D()
+void overlay::createD3D()
 {
 	if ((pD3D = Direct3DCreate9(D3D_SDK_VERSION)) == nullptr)
 	{
@@ -185,7 +159,7 @@ void Overlay::createD3D()
 	}
 }
 
-void Overlay::initD3D()
+void overlay::initD3D()
 {
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -206,20 +180,20 @@ void Overlay::initD3D()
 	ImGui_ImplDX9_Init(pD3DDevice);
 }
 
-void Overlay::cleanupD3D()
+void overlay::cleanupD3D()
 {
 	if (pD3DDevice) { pD3DDevice->Release(); pD3DDevice = nullptr; }
 	if (pD3D) { pD3D->Release(); pD3D = nullptr; }
 }
 
-void Overlay::startRender()
+void overlay::startRender()
 {
 	ImGui_ImplDX9_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 }
 
-void Overlay::rendering()
+void overlay::rendering()
 {
 	ImGui::EndFrame();
 	pD3DDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -239,7 +213,7 @@ void Overlay::rendering()
 	}
 }
 
-void Overlay::handleLostDevice()
+void overlay::handleLostDevice()
 {
 	HRESULT result = pD3DDevice->Present(nullptr, nullptr, nullptr, nullptr);
 	if (result == D3DERR_DEVICELOST && pD3DDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET) {
@@ -251,102 +225,19 @@ void Overlay::handleLostDevice()
 	}
 }
 
-void Overlay::drawESP()
+void overlay::drawESP()
 {
-	// Window viewport id
 	ImDrawList* mainDraw = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
 	ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
 	mainDraw->AddText(ImGui::GetMainViewport()->Pos, IM_COL32(255, 255, 255, 255), "Rebirth");
-	mainDraw->AddRectFilled(mainViewPortPos + ImVec2(100.0f, 100.0f), mainViewPortPos + ImVec2(200.0f, 200.0f), ImColor(255, 255, 255), 0);
+	mainDraw->AddRectFilled(ImVec2(mainViewPortPos.x + 100, mainViewPortPos.y + 100), ImVec2(mainViewPortPos.x + 200, mainViewPortPos.y + 200), ImColor(255, 255, 255), 0);
 }
 
-void Overlay::drawMainMenu()
+void overlay::drawMainMenu()
 {
-	ImGui::SetNextWindowClass(&windowClass); // i declear windowClass as global variable and init it in Overlay constructor, check it later
-	ImGui::SetNextWindowSize(ImVec2(500, 300));
-	ImGui::Begin(
-		"Rebirth",
-		&isRunning,
-		ImGuiWindowFlags_NoResize |
-		ImGuiWindowFlags_NoSavedSettings |
-		ImGuiWindowFlags_NoCollapse |
-		ImGuiWindowFlags_NoDocking
-	);
-
-	if (ImGui::BeginTabBar("MainTab"))
-	{
-		// Hack tab
-		if (ImGui::BeginTabItem("hack"))
-		{
-			ImGui::EndTabItem();
-		}
-
-		// Visual tab
-		if (ImGui::BeginTabItem("visual"))
-		{
-			//if (memory.GetProcessId() == 0) ImGui::BeginDisabled();
-
-			//ImGui::Checkbox("ESP");
-
-			//if (memory.GetProcessId() == 0) ImGui::EndDisabled();
-
-			ImGui::EndTabItem();
-		}
-
-		// Log tab
-		if (ImGui::BeginTabItem("log"))
-		{
-			appLog.Draw("Rebirth");
-			ImGui::EndTabItem();
-		}
-
-		// Test tab
-		if (ImGui::BeginTabItem("test"))
-		{
-			ImGui::Text("Window Viewport ID: %d", ImGui::GetWindowViewport()->ID);
-
-			ImVec2 mainViewPortPos = ImGui::GetMainViewport()->Pos;
-			ImGui::Text("Main Viewport Pos: (%.1f, %.1f)", mainViewPortPos.x, mainViewPortPos.y);
-
-			ImVec2 mainViewPortSize = ImGui::GetMainViewport()->Size;
-			ImGui::Text("Main Viewport Size: (%.1f, %.1f)", mainViewPortSize.x, mainViewPortSize.y);
-
-			ImVec2 windowPos = ImGui::GetWindowPos();
-			ImGui::Text("Window Pos: (%.1f, %.1f)", windowPos.x, windowPos.y);
-
-			ImVec2 windowSize = ImGui::GetWindowSize();
-			ImGui::Text("Window Size: (%.1f, %.1f)", windowSize.x, windowSize.y);
-
-			ImVec2 windowViewportPos = ImGui::GetWindowViewport()->Pos;
-			ImGui::Text("Window Viewport Pos: (%.1f, %.1f)", windowViewportPos.x, windowViewportPos.y);
-
-			ImVec2 windowViewportSize = ImGui::GetWindowViewport()->Size;
-			ImGui::Text("Window Viewport Size: (%.1f, %.1f)", windowViewportSize.x, windowViewportSize.y);
-			ImGui::EndTabItem();
-		}
-		ImGui::EndTabBar();
-	}
+	ImGui::Begin("Main Menu");
+	ImGui::Text("Hello, world!");
 	ImGui::End();
-}
-
-void Overlay::hack()
-{
-	
-}
-
-void checkProcess(Memory& memory) {
-	while (processFound == false)
-	{
-		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
-		std::this_thread::sleep_for(std::chrono::seconds(5));
-		memory.Reinitialize(L"ac_client.exe");
-
-		if (memory.GetProcessId() != 0 || forceExitThread)
-		{
-			processFound = { true };
-			break;
-		}
-	}
 }
 
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)

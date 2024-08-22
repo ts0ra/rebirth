@@ -1,35 +1,25 @@
 #pragma once
 #include <d3d9.h>
-#include <log.h>
-#include <memory.h>
 
-class Overlay
+class overlay
 {
 public:
-    bool isRunning { true };
-    Overlay(HINSTANCE hInst);  // init
-    ~Overlay();
+    overlay(HINSTANCE hInst);  // init
+    ~overlay();
 
     void runMessageLoop();
 
     void showOverlay();
     void hideOverlay();
-
 private:
     HINSTANCE hInst;
-    WNDCLASS wc {};
-	MEMORY mem;
+    WNDCLASS wc;
+    bool isRunning;
 
-    HWND hWnd {};
-    LPDIRECT3D9 pD3D {};
-    LPDIRECT3DDEVICE9 pD3DDevice {};
-    D3DPRESENT_PARAMETERS d3dpp {};
-
-    RECT clientRect { 0, 0, 0, 0 };
-    POINT clientToScreenPoint { 0, 0 };
-
-    int clientWidth { 500 };
-    int clientHeight { 300 };
+    HWND hWnd;
+    LPDIRECT3D9 pD3D;
+    LPDIRECT3DDEVICE9 pD3DDevice;
+    D3DPRESENT_PARAMETERS d3dpp;
 
     void registerClassOverlay();
     void createOverlay();
@@ -44,6 +34,4 @@ private:
 
     void drawESP();
     void drawMainMenu();
-
-    void hack();
 };

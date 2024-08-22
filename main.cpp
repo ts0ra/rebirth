@@ -1,5 +1,5 @@
-#include <overlay.h>
-#include <Windows.h>
+#include "Windows.h"
+#include "overlay.h"
 
 int WINAPI wWinMain(
     _In_ HINSTANCE hInstance,
@@ -7,8 +7,8 @@ int WINAPI wWinMain(
     _In_ LPWSTR    lpCmdLine,
     _In_ int       nCmdShow)
 {
-
-    Overlay esp { hInstance };
+    
+    overlay esp(hInstance);
 	esp.showOverlay();
 	esp.runMessageLoop();
 
