@@ -11,7 +11,7 @@
 
 // Forward declarations
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-void checkProcess(Memory& memory);
+void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight);
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Global variables
@@ -31,13 +31,20 @@ Overlay::Overlay(HINSTANCE hInst) : mem(L"ac_client.exe")
 
 	if (!processFound)
 	{
-		checkProcessThread = std::thread(checkProcess, std::ref(mem));
+		checkProcessThread = std::thread(
+			checkProcess, std::ref(mem), 
+			std::ref(hWnd), 
+			std::ref(clientRect), 
+			std::ref(clientToScreenPoint), 
+			std::ref(clientWidth), 
+			std::ref(clientHeight)
+		);
 	}
 
-	menuClass.ViewportFlagsOverrideSet = {
+	/*menuClass.ViewportFlagsOverrideSet = {
 		ImGuiViewportFlags_NoAutoMerge |
 		ImGuiViewportFlags_IsFocused
-	};
+	};*/
 
 	registerClassOverlay();
 	createOverlay();
@@ -77,9 +84,6 @@ void Overlay::createOverlay()
 	if (processFound)
 	{
 		targetWindow = FindWindow(NULL, L"AssaultCube");
-
-		clientRect = { 0, 0, 800, 600 };
-		clientToScreenPoint = { 0, 0 };
 
 		if (GetClientRect(targetWindow, &clientRect)) {
 			ClientToScreen(targetWindow, &clientToScreenPoint);
@@ -193,6 +197,7 @@ void Overlay::initD3D()
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
 	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // use viewport
+	io.ConfigViewportsNoAutoMerge = true; // dont merge viewports automatically
 
 	ImGui::StyleColorsDark();
 
@@ -264,7 +269,7 @@ void Overlay::drawESP()
 
 void Overlay::drawMainMenu()
 {
-	ImGui::SetNextWindowClass(&menuClass);
+	//ImGui::SetNextWindowClass(&menuClass);
 	ImGui::SetNextWindowSize(ImVec2(500, 300));
 	ImGui::Begin(
 		"Rebirth",
@@ -336,7 +341,7 @@ void Overlay::hack()
 
 }
 
-void checkProcess(Memory& memory) {
+void checkProcess(Memory& memory, HWND& hWnd, RECT& clientRect, POINT& clientToScreenPoint, int& clientWidth, int& clientHeight) {
 	while (processFound == false)
 	{
 		appLog.AddLog("[-] Process not found, retrying in 5 seconds...\n");
@@ -345,6 +350,24 @@ void checkProcess(Memory& memory) {
 
 		if (memory.GetProcessId() != 0 || forceExitThread)
 		{
+			targetWindow = FindWindow(NULL, L"AssaultCube");
+
+			if (GetClientRect(targetWindow, &clientRect)) {
+				ClientToScreen(targetWindow, &clientToScreenPoint);
+			}
+
+			clientWidth = { clientRect.right - clientRect.left };
+			clientHeight = { clientRect.bottom - clientRect.top };
+
+			SetWindowPos(
+				hWnd, 
+				HWND_TOPMOST, 
+				clientToScreenPoint.x,
+				clientToScreenPoint.y,
+				clientWidth,
+				clientHeight,
+				SWP_SHOWWINDOW | SWP_NOACTIVATE
+			);
 			processFound = { true };
 			break;
 		}

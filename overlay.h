@@ -20,7 +20,7 @@ private:
     WNDCLASS wc{};
     MEMORY mem;
 
-    ImGuiWindowClass menuClass;
+    //ImGuiWindowClass menuClass;
 
     HWND hWnd{};
     LPDIRECT3D9 pD3D{};
